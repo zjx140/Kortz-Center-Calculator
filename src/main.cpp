@@ -7,6 +7,7 @@
 #include <uxtheme.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cwctype>
@@ -508,55 +509,108 @@ void removeSelectedTargets() {
 void layoutControls(int width, int height) {
     constexpr int margin = 24;
     const int contentWidth = std::max(760, width - margin * 2);
-
-    MoveWindow(g_titleLabel, margin, 15, contentWidth - 460, 40, TRUE);
-    MoveWindow(g_subtitleLabel, margin, 58, contentWidth - 460, 28, TRUE);
-    MoveWindow(g_languageLabel, width - margin - 445, 29, 85, 30, TRUE);
-    MoveWindow(g_languageCombo, width - margin - 355, 24, 120, 180, TRUE);
-    MoveWindow(g_playerCountLabel, width - margin - 220, 29, 80, 30, TRUE);
-    MoveWindow(g_playerCountCombo, width - margin - 135, 24, 135, 180, TRUE);
-
-    MoveWindow(g_inputGroup, margin, 98, contentWidth, 166, TRUE);
     const int comboWidth = std::max(320, contentWidth - 640);
-    MoveWindow(g_targetLabel, margin + 18, 127, comboWidth, 25, TRUE);
-    MoveWindow(g_targetCombo, margin + 18, 153, comboWidth, 330, TRUE);
-    MoveWindow(g_valueLabel, margin + 30 + comboWidth, 127, 150, 25, TRUE);
-    MoveWindow(g_valueEdit, margin + 30 + comboWidth, 153, 150, 34, TRUE);
-    MoveWindow(g_quantityLabel, margin + 192 + comboWidth, 127, 70, 25, TRUE);
-    MoveWindow(g_quantityEdit, margin + 192 + comboWidth, 153, 70, 34, TRUE);
-    MoveWindow(g_designatedCheck, margin + 274 + comboWidth, 153, 150, 34, TRUE);
-    MoveWindow(g_addButton, margin + 434 + comboWidth, 151, 145, 38, TRUE);
-    MoveWindow(g_difficultyLabel, margin + 18, 207, 80, 30, TRUE);
-    MoveWindow(g_difficultyCombo, margin + 103, 202, 195, 180, TRUE);
-    MoveWindow(g_referenceLabel, margin + 315, 207, contentWidth - 333, 32, TRUE);
-
     const int listTop = 276;
     const int available = std::max(390, height - listTop - margin);
     const int listGroupHeight = std::max(245, available * 52 / 100);
-    MoveWindow(g_listGroup, margin, listTop, contentWidth, listGroupHeight, TRUE);
-    MoveWindow(g_lootList, margin + 14, listTop + 28, contentWidth - 28,
-               listGroupHeight - 79, TRUE);
-    MoveWindow(g_statusLabel, margin + 18, listTop + listGroupHeight - 44, 490, 29, TRUE);
-    MoveWindow(g_removeButton, width - margin - 430, listTop + listGroupHeight - 51, 130, 36, TRUE);
-    MoveWindow(g_clearButton, width - margin - 290, listTop + listGroupHeight - 51, 120, 36, TRUE);
-    MoveWindow(g_calculateButton, width - margin - 160, listTop + listGroupHeight - 51, 145, 36, TRUE);
-
+    const int listGroupBottom = listTop + listGroupHeight;
+    const int footerTop = listGroupBottom - 51;
+    constexpr int listFooterGap = 8;
+    const int listViewTop = listTop + 28;
+    const int listViewHeight = std::max(80, footerTop - listFooterGap - listViewTop);
     const int resultTop = listTop + listGroupHeight + 12;
     const int resultHeight = std::max(125, height - resultTop - margin);
-    MoveWindow(g_resultGroup, margin, resultTop, contentWidth, resultHeight, TRUE);
-    MoveWindow(g_resultEdit, margin + 14, resultTop + 27, contentWidth - 28,
-               resultHeight - 41, TRUE);
+
+    struct ControlPlacement {
+        HWND window;
+        int x;
+        int y;
+        int width;
+        int height;
+    };
+    const std::array<ControlPlacement, 26> placements{{
+        {g_titleLabel, margin, 15, contentWidth - 460, 40},
+        {g_subtitleLabel, margin, 58, contentWidth - 460, 28},
+        {g_languageLabel, width - margin - 445, 29, 85, 30},
+        {g_languageCombo, width - margin - 355, 24, 120, 180},
+        {g_playerCountLabel, width - margin - 220, 29, 80, 30},
+        {g_playerCountCombo, width - margin - 135, 24, 135, 180},
+
+        {g_inputGroup, margin, 98, contentWidth, 166},
+        {g_targetLabel, margin + 18, 127, comboWidth, 25},
+        {g_targetCombo, margin + 18, 153, comboWidth, 330},
+        {g_valueLabel, margin + 30 + comboWidth, 127, 150, 25},
+        {g_valueEdit, margin + 30 + comboWidth, 153, 150, 34},
+        {g_quantityLabel, margin + 192 + comboWidth, 127, 70, 25},
+        {g_quantityEdit, margin + 192 + comboWidth, 153, 70, 34},
+        {g_designatedCheck, margin + 274 + comboWidth, 153, 150, 34},
+        {g_addButton, margin + 434 + comboWidth, 151, 145, 38},
+        {g_difficultyLabel, margin + 18, 207, 80, 30},
+        {g_difficultyCombo, margin + 103, 202, 210, 180},
+        {g_referenceLabel, margin + 330, 207, contentWidth - 348, 32},
+
+        {g_listGroup, margin, listTop, contentWidth, listGroupHeight},
+        {g_lootList, margin + 14, listViewTop, contentWidth - 28, listViewHeight},
+        {g_statusLabel, margin + 18, footerTop, 490, 36},
+        {g_removeButton, width - margin - 430, footerTop, 130, 36},
+        {g_clearButton, width - margin - 290, footerTop, 120, 36},
+        {g_calculateButton, width - margin - 160, footerTop, 145, 36},
+
+        {g_resultGroup, margin, resultTop, contentWidth, resultHeight},
+        {g_resultEdit, margin + 14, resultTop + 27, contentWidth - 28, resultHeight - 41},
+    }};
+
+    HDWP deferred = BeginDeferWindowPos(static_cast<int>(placements.size()));
+    bool layoutSucceeded = deferred != nullptr;
+    if (layoutSucceeded) {
+        for (const auto& placement : placements) {
+            deferred = DeferWindowPos(
+                deferred, placement.window, nullptr,
+                placement.x, placement.y, placement.width, placement.height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+            if (!deferred) {
+                layoutSucceeded = false;
+                break;
+            }
+        }
+    }
+    if (layoutSucceeded) {
+        layoutSucceeded = EndDeferWindowPos(deferred) != FALSE;
+    }
+    if (!layoutSucceeded) {
+        for (const auto& placement : placements) {
+            MoveWindow(placement.window, placement.x, placement.y,
+                       placement.width, placement.height, FALSE);
+        }
+    }
 
     if (g_lootList) {
-        const int listWidth = contentWidth - 48;
-        ListView_SetColumnWidth(g_lootList, 0, std::max(240, listWidth * 28 / 100));
-        ListView_SetColumnWidth(g_lootList, 1, std::max(105, listWidth * 13 / 100));
-        ListView_SetColumnWidth(g_lootList, 2, std::max(110, listWidth * 13 / 100));
-        ListView_SetColumnWidth(g_lootList, 3, 90);
-        ListView_SetColumnWidth(g_lootList, 4, 70);
-        ListView_SetColumnWidth(g_lootList, 5, 105);
-        ListView_SetColumnWidth(g_lootList, 6, 90);
+        const int listWidth = std::max(
+            760, contentWidth - 32 - GetSystemMetrics(SM_CXVSCROLL));
+        constexpr int capacityWidth = 105;
+        constexpr int quantityWidth = 70;
+        constexpr int designatedWidth = 110;
+        constexpr int statusWidth = 100;
+        const int flexibleWidth = listWidth - capacityWidth - quantityWidth -
+                                  designatedWidth - statusWidth;
+        const int targetWidth = flexibleWidth * 52 / 100;
+        const int locationWidth = flexibleWidth * 25 / 100;
+        const int valueWidth = flexibleWidth - targetWidth - locationWidth;
+
+        ListView_SetColumnWidth(g_lootList, 0, targetWidth);
+        ListView_SetColumnWidth(g_lootList, 1, locationWidth);
+        ListView_SetColumnWidth(g_lootList, 2, valueWidth);
+        ListView_SetColumnWidth(g_lootList, 3, capacityWidth);
+        ListView_SetColumnWidth(g_lootList, 4, quantityWidth);
+        ListView_SetColumnWidth(g_lootList, 5, designatedWidth);
+        ListView_SetColumnWidth(g_lootList, 6, statusWidth);
     }
+
+    // Group boxes are transparent siblings, so repaint the complete parent and
+    // all children after an atomic resize. This clears pixels exposed by controls
+    // that became smaller instead of leaving their old rows or text behind.
+    RedrawWindow(g_mainWindow, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
 
 void createUi() {
@@ -573,7 +627,8 @@ void createUi() {
     g_playerCountCombo = makeControl(WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"",
         CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, IDC_PLAYER_COUNT);
 
-    g_inputGroup = makeControl(0, L"BUTTON", L"1. 添加侦察目标", BS_GROUPBOX, 0);
+    g_inputGroup = makeControl(0, L"BUTTON", L"1. 添加侦察目标",
+                               BS_GROUPBOX | WS_CLIPSIBLINGS, 0);
     g_targetLabel = makeControl(0, L"STATIC", L"目标与地点", SS_LEFT, 0);
     g_valueLabel = makeControl(0, L"STATIC", L"实际价值（$）", SS_LEFT, 0);
     g_quantityLabel = makeControl(0, L"STATIC", L"数量", SS_LEFT, 0);
@@ -594,7 +649,8 @@ void createUi() {
     g_referenceLabel = makeControl(0, L"STATIC", L"请选择目标。实际价值以侦察结果为准。",
                                    SS_LEFT, IDC_REFERENCE_LABEL);
 
-    g_listGroup = makeControl(0, L"BUTTON", L"2. 本次侦察清单", BS_GROUPBOX, 0);
+    g_listGroup = makeControl(0, L"BUTTON", L"2. 本次侦察清单",
+                              BS_GROUPBOX | WS_CLIPSIBLINGS, 0);
     g_lootList = makeControl(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                              LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_TABSTOP,
                              IDC_LOOT_LIST);
@@ -611,7 +667,8 @@ void createUi() {
         column.fmt = (i >= 2 && i <= 4) ? LVCFMT_RIGHT : LVCFMT_LEFT;
         ListView_InsertColumn(g_lootList, i, &column);
     }
-    g_statusLabel = makeControl(0, L"STATIC", L"已录入 0 类目标，共 0 件", SS_LEFT, IDC_STATUS_LABEL);
+    g_statusLabel = makeControl(0, L"STATIC", L"已录入 0 类目标，共 0 件",
+                                SS_LEFT | SS_CENTERIMAGE, IDC_STATUS_LABEL);
     g_removeButton = makeControl(0, L"BUTTON", L"移除选中", BS_PUSHBUTTON | WS_TABSTOP,
                                  IDC_REMOVE_BUTTON);
     g_clearButton = makeControl(0, L"BUTTON", L"清空清单", BS_PUSHBUTTON | WS_TABSTOP,
@@ -619,7 +676,8 @@ void createUi() {
     g_calculateButton = makeControl(0, L"BUTTON", L"计算最优方案",
                                     BS_DEFPUSHBUTTON | WS_TABSTOP, IDC_CALCULATE_BUTTON);
 
-    g_resultGroup = makeControl(0, L"BUTTON", L"3. 最优拿取方案", BS_GROUPBOX, 0);
+    g_resultGroup = makeControl(0, L"BUTTON", L"3. 最优拿取方案",
+                                BS_GROUPBOX | WS_CLIPSIBLINGS, 0);
     g_resultEdit = makeControl(WS_EX_CLIENTEDGE, L"EDIT", L"",
         ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, IDC_RESULT_EDIT);
 
@@ -636,6 +694,16 @@ void createUi() {
         setFont(control);
     }
     setFont(ListView_GetHeader(g_lootList));
+
+    // A group box is a visual sibling, not the parent of the controls inside it.
+    // Keep all three frames behind the interactive controls so sibling clipping
+    // cannot hide them during a resize repaint.
+    SetWindowPos(g_inputGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_listGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_resultGroup, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     refreshLanguageUi();
 }
@@ -787,7 +855,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
 
     const HWND window = CreateWindowExW(0, kWindowClass, L"科兹中心目标价值计算器",
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 880,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 880,
         nullptr, nullptr, instance, nullptr);
     if (!window) {
         return 1;
