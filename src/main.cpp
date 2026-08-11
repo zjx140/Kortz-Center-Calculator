@@ -27,9 +27,11 @@ constexpr COLORREF kMutedColor = RGB(87, 107, 112);
 enum ControlId {
     IDC_PLAYER_COUNT = 100,
     IDC_LANGUAGE,
+    IDC_DIFFICULTY,
     IDC_TARGET_COMBO,
     IDC_VALUE_EDIT,
     IDC_QUANTITY_EDIT,
+    IDC_DESIGNATED,
     IDC_ADD_BUTTON,
     IDC_REFERENCE_LABEL,
     IDC_LOOT_LIST,
@@ -58,9 +60,12 @@ HWND g_playerCountCombo = nullptr;
 HWND g_playerCountLabel = nullptr;
 HWND g_languageCombo = nullptr;
 HWND g_languageLabel = nullptr;
+HWND g_difficultyCombo = nullptr;
+HWND g_difficultyLabel = nullptr;
 HWND g_targetCombo = nullptr;
 HWND g_valueEdit = nullptr;
 HWND g_quantityEdit = nullptr;
+HWND g_designatedCheck = nullptr;
 HWND g_addButton = nullptr;
 HWND g_referenceLabel = nullptr;
 HWND g_lootList = nullptr;
@@ -164,6 +169,10 @@ bool isMultiplayer() {
     return playerCount() >= 2;
 }
 
+std::int64_t designatedBonus() {
+    return ComboBox_GetCurSel(g_difficultyCombo) == 1 ? 100000 : 50000;
+}
+
 void addCatalogItems(const std::vector<std::wstring>& names,
                      const wchar_t* location,
                      int capacity,
@@ -247,6 +256,20 @@ void rebuildPlayerCountOptions() {
     ComboBox_SetCurSel(g_playerCountCombo, previousSelection);
 }
 
+void rebuildDifficultyOptions() {
+    const int previousSelection = std::max(0, ComboBox_GetCurSel(g_difficultyCombo));
+    ComboBox_ResetContent(g_difficultyCombo);
+    const wchar_t* options[] = {
+        L"简单（奖励 $50,000）",
+        L"困难（奖励 $100,000）",
+    };
+    for (const auto* option : options) {
+        const auto displayed = localize(option);
+        ComboBox_AddString(g_difficultyCombo, displayed.c_str());
+    }
+    ComboBox_SetCurSel(g_difficultyCombo, previousSelection);
+}
+
 void rebuildTargetOptions() {
     const int previousSelection = std::max(0, ComboBox_GetCurSel(g_targetCombo));
     ComboBox_ResetContent(g_targetCombo);
@@ -263,8 +286,9 @@ void rebuildTargetOptions() {
 }
 
 void updateListColumnHeaders() {
-    const wchar_t* columns[] = {L"目标", L"地点", L"单件价值", L"单件占用", L"数量", L"状态"};
-    for (int index = 0; index < 6; ++index) {
+    const wchar_t* columns[] = {
+        L"目标", L"地点", L"单件价值", L"单件占用", L"数量", L"买家指定", L"状态"};
+    for (int index = 0; index < 7; ++index) {
         auto displayed = localize(columns[index]);
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT;
@@ -310,20 +334,28 @@ void refreshListView() {
         ListView_SetItemText(g_lootList, static_cast<int>(i), 3, capacity.data());
         auto quantity = std::to_wstring(input.quantity);
         ListView_SetItemText(g_lootList, static_cast<int>(i), 4, quantity.data());
+        const auto designated = localize(input.buyerDesignated ? L"是" : L"否");
+        ListView_SetItemText(g_lootList, static_cast<int>(i), 5,
+                             const_cast<wchar_t*>(designated.c_str()));
         const std::wstring availability = localize(
             input.requiresMultiplayer && !isMultiplayer() ? L"已排除" : L"可参与");
-        ListView_SetItemText(g_lootList, static_cast<int>(i), 5,
+        ListView_SetItemText(g_lootList, static_cast<int>(i), 6,
                              const_cast<wchar_t*>(availability.c_str()));
     }
+    int designatedCount = 0;
     const auto totalQuantity = [&] {
         int count = 0;
         for (const auto& input : g_inputs) {
             count += input.quantity;
+            if (input.buyerDesignated) {
+                designatedCount += input.quantity;
+            }
         }
         return count;
     }();
     const std::wstring status = L"已录入 " + std::to_wstring(g_inputs.size()) +
-                                L" 类目标，共 " + std::to_wstring(totalQuantity) + L" 件";
+                                L" 类目标，共 " + std::to_wstring(totalQuantity) +
+                                L" 件；买家指定 " + std::to_wstring(designatedCount) + L" 件";
     setLocalizedText(g_statusLabel, status);
 }
 
@@ -335,21 +367,36 @@ void calculateAndDisplay() {
     }
 
     const int players = playerCount();
-    const auto result = kortz::optimizeLoot(g_inputs, players, 100);
+    const auto bonus = designatedBonus();
+    const auto result = kortz::optimizeLoot(g_inputs, players, 100, bonus);
     std::wostringstream output;
-    output << L"游玩人数：" << players << L" 人\r\n";
+    output << L"游玩人数：" << players << L" 人    难度："
+           << (bonus == 100000 ? L"困难" : L"简单") << L"\r\n";
     if (players >= 2 && !result.allBagsFull) {
         output << L"结论：现有目标无法让所有玩家都恰好装满 100% 背包。\r\n"
                << L"下面显示最接近的均衡分配，仅供调整侦察清单时参考。\r\n"
-               << L"参考总价值：" << formatCurrency(result.totalValue) << L"\r\n\r\n";
+               << L"参考目标价值：" << formatCurrency(result.lootValue) << L"\r\n";
     } else {
-        output << (players >= 2 ? L"最高团队总价值：" : L"最高可得价值：")
-               << formatCurrency(result.totalValue) << L"\r\n";
+        output << L"目标本身价值：" << formatCurrency(result.lootValue) << L"\r\n";
         if (players >= 2) {
             output << L"结果：所有玩家背包均已装满 100%。\r\n";
         }
-        output << L"\r\n";
     }
+    if (result.designatedQuantity == 0) {
+        output << L"指定目标奖励：未标记买家指定目标，不计奖励。\r\n";
+    } else if (result.excludedDesignated202Quantity > 0) {
+        output << L"指定目标奖励：无法获得；有 "
+               << result.excludedDesignated202Quantity
+               << L" 件买家指定目标位于 202 展览室，单人无法拿取。\r\n";
+    } else if (result.designatedBonusEarned) {
+        output << L"指定目标奖励：已拿齐 " << result.designatedQuantity << L" 件，获得 "
+               << formatCurrency(result.designatedBonusValue) << L"。\r\n";
+    } else {
+        output << L"指定目标奖励：未获得；最高总收益方案没有拿齐全部 "
+               << result.designatedQuantity << L" 件指定目标。\r\n";
+    }
+    output << (players >= 2 ? L"团队总收益：" : L"总收益：")
+           << formatCurrency(result.totalValue) << L"\r\n\r\n";
 
     std::vector<int> chosen(g_inputs.size(), 0);
     for (std::size_t playerIndex = 0; playerIndex < result.players.size(); ++playerIndex) {
@@ -364,7 +411,8 @@ void calculateAndDisplay() {
                 chosen[selection.inputIndex] += selection.quantity;
                 const auto& input = g_inputs[selection.inputIndex];
                 const auto subtotal = input.unitValue * selection.quantity;
-                output << L"  • " << input.name << L"［" << input.location << L"］ × "
+                output << L"  • " << (input.buyerDesignated ? L"【买家指定】" : L"")
+                       << input.name << L"［" << input.location << L"］ × "
                        << selection.quantity << L"  —  "
                        << input.capacityPercent * selection.quantity << L"%，"
                        << formatCurrency(subtotal) << L"\r\n";
@@ -381,7 +429,8 @@ void calculateAndDisplay() {
                 output << L"无需拿取：\r\n";
                 hasUnselected = true;
             }
-            output << L"  • " << g_inputs[i].name << L"［" << g_inputs[i].location << L"］ × "
+            output << L"  • " << (g_inputs[i].buyerDesignated ? L"【买家指定】" : L"")
+                   << g_inputs[i].name << L"［" << g_inputs[i].location << L"］ × "
                    << remaining << L"\r\n";
         }
     }
@@ -401,13 +450,6 @@ void addCurrentTarget() {
         return;
     }
     const auto& catalogItem = g_catalog[static_cast<std::size_t>(selection)];
-    if (catalogItem.requiresMultiplayer && !isMultiplayer()) {
-        showLocalizedMessage(
-            L"该目标位于 202 展览室。请先把游玩人数设置为 2–4 人，才能把它加入计算。",
-            L"需要多人游玩", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
     std::int64_t value = 0;
     if (!parsePositiveInteger(getWindowText(g_valueEdit), value)) {
         showLocalizedMessage(L"请输入大于 0 的实际价值。可使用逗号，例如 127,500。",
@@ -433,8 +475,11 @@ void addCurrentTarget() {
         }
     }
 
+    const bool buyerDesignated = Button_GetCheck(g_designatedCheck) == BST_CHECKED;
     g_inputs.push_back({catalogItem.name, catalogItem.location, catalogItem.capacityPercent,
-                        value, static_cast<int>(quantityValue), catalogItem.requiresMultiplayer});
+                        value, static_cast<int>(quantityValue), catalogItem.requiresMultiplayer,
+                        buyerDesignated});
+    Button_SetCheck(g_designatedCheck, BST_UNCHECKED);
     refreshListView();
     calculateAndDisplay();
 }
@@ -471,24 +516,27 @@ void layoutControls(int width, int height) {
     MoveWindow(g_playerCountLabel, width - margin - 220, 29, 80, 30, TRUE);
     MoveWindow(g_playerCountCombo, width - margin - 135, 24, 135, 180, TRUE);
 
-    MoveWindow(g_inputGroup, margin, 98, contentWidth, 154, TRUE);
-    const int comboWidth = std::max(320, contentWidth - 475);
+    MoveWindow(g_inputGroup, margin, 98, contentWidth, 166, TRUE);
+    const int comboWidth = std::max(320, contentWidth - 640);
     MoveWindow(g_targetLabel, margin + 18, 127, comboWidth, 25, TRUE);
     MoveWindow(g_targetCombo, margin + 18, 153, comboWidth, 330, TRUE);
     MoveWindow(g_valueLabel, margin + 30 + comboWidth, 127, 150, 25, TRUE);
     MoveWindow(g_valueEdit, margin + 30 + comboWidth, 153, 150, 34, TRUE);
     MoveWindow(g_quantityLabel, margin + 192 + comboWidth, 127, 70, 25, TRUE);
     MoveWindow(g_quantityEdit, margin + 192 + comboWidth, 153, 70, 34, TRUE);
-    MoveWindow(g_addButton, margin + 274 + comboWidth, 151, 145, 38, TRUE);
-    MoveWindow(g_referenceLabel, margin + 18, 200, contentWidth - 36, 32, TRUE);
+    MoveWindow(g_designatedCheck, margin + 274 + comboWidth, 153, 150, 34, TRUE);
+    MoveWindow(g_addButton, margin + 434 + comboWidth, 151, 145, 38, TRUE);
+    MoveWindow(g_difficultyLabel, margin + 18, 207, 80, 30, TRUE);
+    MoveWindow(g_difficultyCombo, margin + 103, 202, 195, 180, TRUE);
+    MoveWindow(g_referenceLabel, margin + 315, 207, contentWidth - 333, 32, TRUE);
 
-    const int listTop = 264;
+    const int listTop = 276;
     const int available = std::max(390, height - listTop - margin);
     const int listGroupHeight = std::max(245, available * 52 / 100);
     MoveWindow(g_listGroup, margin, listTop, contentWidth, listGroupHeight, TRUE);
     MoveWindow(g_lootList, margin + 14, listTop + 28, contentWidth - 28,
                listGroupHeight - 79, TRUE);
-    MoveWindow(g_statusLabel, margin + 18, listTop + listGroupHeight - 44, 330, 29, TRUE);
+    MoveWindow(g_statusLabel, margin + 18, listTop + listGroupHeight - 44, 490, 29, TRUE);
     MoveWindow(g_removeButton, width - margin - 430, listTop + listGroupHeight - 51, 130, 36, TRUE);
     MoveWindow(g_clearButton, width - margin - 290, listTop + listGroupHeight - 51, 120, 36, TRUE);
     MoveWindow(g_calculateButton, width - margin - 160, listTop + listGroupHeight - 51, 145, 36, TRUE);
@@ -501,12 +549,13 @@ void layoutControls(int width, int height) {
 
     if (g_lootList) {
         const int listWidth = contentWidth - 48;
-        ListView_SetColumnWidth(g_lootList, 0, std::max(260, listWidth * 34 / 100));
-        ListView_SetColumnWidth(g_lootList, 1, std::max(110, listWidth * 15 / 100));
-        ListView_SetColumnWidth(g_lootList, 2, std::max(115, listWidth * 15 / 100));
+        ListView_SetColumnWidth(g_lootList, 0, std::max(240, listWidth * 28 / 100));
+        ListView_SetColumnWidth(g_lootList, 1, std::max(105, listWidth * 13 / 100));
+        ListView_SetColumnWidth(g_lootList, 2, std::max(110, listWidth * 13 / 100));
         ListView_SetColumnWidth(g_lootList, 3, 90);
         ListView_SetColumnWidth(g_lootList, 4, 70);
-        ListView_SetColumnWidth(g_lootList, 5, 90);
+        ListView_SetColumnWidth(g_lootList, 5, 105);
+        ListView_SetColumnWidth(g_lootList, 6, 90);
     }
 }
 
@@ -535,8 +584,13 @@ void createUi() {
                               IDC_VALUE_EDIT);
     g_quantityEdit = makeControl(WS_EX_CLIENTEDGE, L"EDIT", L"1",
                                  ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, IDC_QUANTITY_EDIT);
+    g_designatedCheck = makeControl(0, L"BUTTON", L"买家指定目标",
+                                    BS_AUTOCHECKBOX | WS_TABSTOP, IDC_DESIGNATED);
     g_addButton = makeControl(0, L"BUTTON", L"加入清单", BS_PUSHBUTTON | WS_TABSTOP,
                               IDC_ADD_BUTTON);
+    g_difficultyLabel = makeControl(0, L"STATIC", L"任务难度", SS_LEFT, 0);
+    g_difficultyCombo = makeControl(WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"",
+        CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, IDC_DIFFICULTY);
     g_referenceLabel = makeControl(0, L"STATIC", L"请选择目标。实际价值以侦察结果为准。",
                                    SS_LEFT, IDC_REFERENCE_LABEL);
 
@@ -547,8 +601,9 @@ void createUi() {
     ListView_SetExtendedListViewStyle(g_lootList,
         LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
     SetWindowTheme(g_lootList, L"Explorer", nullptr);
-    const wchar_t* columns[] = {L"目标", L"地点", L"单件价值", L"单件占用", L"数量", L"状态"};
-    for (int i = 0; i < 6; ++i) {
+    const wchar_t* columns[] = {
+        L"目标", L"地点", L"单件价值", L"单件占用", L"数量", L"买家指定", L"状态"};
+    for (int i = 0; i < 7; ++i) {
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
         column.pszText = const_cast<wchar_t*>(columns[i]);
@@ -573,7 +628,8 @@ void createUi() {
         g_subtitleLabel, g_languageLabel, g_languageCombo,
         g_playerCountLabel, g_playerCountCombo, g_inputGroup,
         g_targetLabel, g_valueLabel,
-        g_quantityLabel, g_targetCombo, g_valueEdit, g_quantityEdit, g_addButton,
+        g_quantityLabel, g_targetCombo, g_valueEdit, g_quantityEdit, g_designatedCheck,
+        g_addButton, g_difficultyLabel, g_difficultyCombo,
         g_referenceLabel, g_listGroup, g_lootList, g_statusLabel, g_removeButton,
         g_clearButton, g_calculateButton, g_resultGroup, g_resultEdit};
     for (const HWND control : controls) {
@@ -596,7 +652,9 @@ void refreshLanguageUi() {
     setLocalizedText(g_targetLabel, L"目标与地点");
     setLocalizedText(g_valueLabel, L"实际价值（$）");
     setLocalizedText(g_quantityLabel, L"数量");
+    setLocalizedText(g_designatedCheck, L"买家指定目标");
     setLocalizedText(g_addButton, L"加入清单");
+    setLocalizedText(g_difficultyLabel, L"任务难度");
     setLocalizedText(g_listGroup, L"2. 本次侦察清单");
     setLocalizedText(g_removeButton, L"移除选中");
     setLocalizedText(g_clearButton, L"清空清单");
@@ -604,6 +662,7 @@ void refreshLanguageUi() {
     setLocalizedText(g_resultGroup, L"3. 最优拿取方案");
 
     rebuildPlayerCountOptions();
+    rebuildDifficultyOptions();
     rebuildTargetOptions();
     updateListColumnHeaders();
     updateReferenceLabel();
@@ -645,6 +704,10 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (id == IDC_PLAYER_COUNT && notification == CBN_SELCHANGE) {
             updateReferenceLabel();
             refreshListView();
+            calculateAndDisplay();
+            return 0;
+        }
+        if (id == IDC_DIFFICULTY && notification == CBN_SELCHANGE) {
             calculateAndDisplay();
             return 0;
         }

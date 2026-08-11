@@ -87,6 +87,54 @@ int main() {
         }
     }
 
+    {
+        const std::vector<LootInput> inputs = {
+            {L"指定目标", L"普通区域", 50, 100000, 1, false, true},
+            {L"高价值普通目标", L"普通区域", 50, 130000, 2, false, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 1, 100, 50000);
+        check(result.designatedBonusEarned, "simple bonus changes the optimal plan");
+        check(result.allDesignatedTaken, "all designated loot is selected");
+        check(result.lootValue == 230000, "loot value excludes designated bonus");
+        check(result.designatedBonusValue == 50000, "simple designated bonus value");
+        check(result.totalValue == 280000, "total includes simple designated bonus");
+    }
+
+    {
+        const std::vector<LootInput> inputs = {
+            {L"指定目标", L"普通区域", 50, 100000, 1, false, true},
+            {L"高价值普通目标", L"普通区域", 50, 160000, 2, false, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 1, 100, 50000);
+        check(!result.designatedBonusEarned, "bonus is skipped when ordinary loot pays more");
+        check(result.lootValue == 320000, "higher non-designated loot wins");
+        check(result.totalValue == 320000, "no bonus is added when designated set is incomplete");
+    }
+
+    {
+        const std::vector<LootInput> inputs = {
+            {L"两件指定目标", L"普通区域", 30, 50000, 2, false, true},
+            {L"补足目标", L"普通区域", 40, 80000, 1, false, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 1, 100, 100000);
+        check(result.designatedBonusEarned, "hard bonus requires every designated copy");
+        check(result.designatedQuantity == 2, "all designated quantities are counted");
+        check(result.players[0].usedCapacityPercent == 100, "designated set packing is exact");
+        check(result.totalValue == 280000, "hard bonus total value");
+    }
+
+    {
+        const std::vector<LootInput> inputs = {
+            {L"202指定目标", L"202展览室", 30, 127500, 1, true, true},
+            {L"普通目标", L"普通区域", 50, 150000, 2, false, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 1, 100, 100000);
+        check(!result.designatedBonusEarned, "solo cannot earn bonus requiring 202 loot");
+        check(result.excludedDesignated202Quantity == 1,
+              "excluded designated 202 loot is reported");
+        check(result.totalValue == 300000, "solo optimizes only reachable loot");
+    }
+
     std::cout << "optimizer tests passed\n";
     return 0;
 }

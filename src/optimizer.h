@@ -13,6 +13,7 @@ struct LootInput {
     std::int64_t unitValue = 0;
     int quantity = 0;
     bool requiresMultiplayer = false;
+    bool buyerDesignated = false;
 };
 
 struct LootSelection {
@@ -28,15 +29,22 @@ struct PlayerResult {
 
 struct OptimizationResult {
     std::int64_t totalValue = 0;
+    std::int64_t lootValue = 0;
+    std::int64_t designatedBonusValue = 0;
     int excluded202Quantity = 0;
+    int excludedDesignated202Quantity = 0;
+    int designatedQuantity = 0;
     int playerCount = 1;
     bool allBagsFull = false;
     bool exactFillRequired = false;
+    bool allDesignatedTaken = false;
+    bool designatedBonusEarned = false;
     std::vector<PlayerResult> players;
 };
 
 OptimizationResult optimizeLoot(const std::vector<LootInput>& inputs,
                                 int playerCount,
-                                int capacityPerPlayerPercent = 100);
+                                int capacityPerPlayerPercent = 100,
+                                std::int64_t designatedSetBonus = 0);
 
 }  // namespace kortz
