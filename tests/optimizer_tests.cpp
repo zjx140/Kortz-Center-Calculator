@@ -41,6 +41,10 @@ int main() {
         check(result.allBagsFull, "two players both full");
         check(result.exactFillRequired, "multiplayer requires exact fill");
         check(result.totalValue == 790000, "two-player global maximum value");
+        check(result.lootShare.perPlayer == 395000,
+              "two-player loot value is divided equally");
+        check(result.lootShare.roundingRemainder == 0,
+              "even two-player split has no remainder");
         check(result.players.size() == 2, "two-player result count");
         check(result.players[0].usedCapacityPercent == 100, "player one full");
         check(result.players[1].usedCapacityPercent == 100, "player two full");
@@ -75,6 +79,20 @@ int main() {
 
     {
         const std::vector<LootInput> inputs = {
+            {L"整包目标 A", L"普通区域", 100, 100, 2, false},
+            {L"整包目标 B", L"普通区域", 100, 101, 1, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 3);
+        check(result.allBagsFull, "three whole-bag targets fill three players");
+        check(result.lootValue == 301, "shared loot pool keeps the exact total");
+        check(result.lootShare.perPlayer == 100,
+              "non-divisible loot reports the base equal share");
+        check(result.lootShare.roundingRemainder == 1,
+              "non-divisible loot reports the game-rounding remainder");
+    }
+
+    {
+        const std::vector<LootInput> inputs = {
             {L"A", L"普通区域", 50, 100, 6, false},
             {L"B", L"普通区域", 30, 90, 8, false},
             {L"C", L"普通区域", 20, 70, 8, false},
@@ -96,6 +114,8 @@ int main() {
         check(result.designatedBonusEarned, "simple bonus changes the optimal plan");
         check(result.allDesignatedTaken, "all designated loot is selected");
         check(result.lootValue == 230000, "loot value excludes designated bonus");
+        check(result.designatedBonusPerPlayer == 50000,
+              "solo designated bonus is reported per player");
         check(result.designatedBonusValue == 50000, "simple designated bonus value");
         check(result.totalValue == 280000, "total includes simple designated bonus");
     }
@@ -128,11 +148,79 @@ int main() {
             {L"202指定目标", L"202展览室", 30, 127500, 1, true, true},
             {L"普通目标", L"普通区域", 50, 150000, 2, false, false},
         };
-        const auto result = kortz::optimizeLoot(inputs, 1, 100, 100000);
+        const auto result = kortz::optimizeLoot(inputs, 1, 100, 100000, 100000);
         check(!result.designatedBonusEarned, "solo cannot earn bonus requiring 202 loot");
         check(result.excludedDesignated202Quantity == 1,
               "excluded designated 202 loot is reported");
         check(result.totalValue == 300000, "solo optimizes only reachable loot");
+        check(!result.eliteChallenge.available,
+              "elite reference is unavailable when designated loot cannot be taken");
+    }
+
+    {
+        const std::vector<LootInput> inputs = {
+            {L"指定目标", L"普通区域", 50, 100000, 1, false, true},
+            {L"高价值普通目标", L"普通区域", 50, 160000, 4, false, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 2, 100, 40000, 70000);
+        check(result.designatedBonusEarned,
+              "buyer-designated reward is independently paid to every player");
+        check(result.lootValue == 580000,
+              "multiplayer designated plan reports the shared loot pool");
+        check(result.designatedBonusPerPlayer == 40000,
+              "buyer-designated reward is reported per player");
+        check(result.designatedBonusValue == 80000,
+              "team designated reward includes every player's payment");
+        check(result.totalValue == 660000,
+              "guaranteed team total includes all independent player rewards");
+        check(result.lootShare.perPlayer == 290000,
+              "each player receives half of the target value");
+        check(result.guaranteedShare.perPlayer == 330000,
+              "each guaranteed payout adds an independent buyer reward");
+        check(result.eliteChallenge.available,
+              "taking all designated loot creates an elite reference plan");
+        check(result.eliteChallenge.lootValue == 580000,
+              "elite reference reports its own loot value");
+        check(result.eliteChallenge.buyerDesignatedBonusPerPlayer == 40000,
+              "elite plan keeps the buyer reward per player");
+        check(result.eliteChallenge.buyerDesignatedBonusValue == 80000,
+              "buyer-designated reward remains independent");
+        check(result.eliteChallenge.guaranteedTotalValue == 660000,
+              "elite plan guaranteed total includes only the designated reward");
+        check(result.eliteChallenge.bonusPerPlayer == 70000,
+              "elite bonus is reported per player");
+        check(result.eliteChallenge.teamBonusValue == 140000,
+              "multiplayer elite bonus is paid to every player");
+        check(result.eliteChallenge.referenceTotalValue == 800000,
+              "elite reference total adds the separate potential team bonus");
+        check(result.eliteChallenge.referenceShare.perPlayer == 400000,
+              "elite reference total is divided across all players");
+        check(result.eliteChallenge.sameAsPrimaryPlan,
+              "identical primary and elite allocations are detected");
+        check(result.eliteChallenge.players.size() == 2,
+              "elite reference includes a multiplayer allocation");
+    }
+
+    {
+        const std::vector<LootInput> inputs = {
+            {L"指定目标", L"普通区域", 50, 100000, 1, false, true},
+            {L"高价值普通目标", L"普通区域", 50, 160000, 4, false, false},
+        };
+        const auto result = kortz::optimizeLoot(inputs, 2, 100, 20000, 100000);
+        check(!result.designatedBonusEarned,
+              "potential elite reward does not change the guaranteed optimum");
+        check(result.totalValue == 640000,
+              "ordinary guaranteed optimum remains primary without enough buyer reward");
+        check(result.eliteChallenge.available,
+              "an all-designated elite reference remains available as an alternative");
+        check(result.eliteChallenge.guaranteedTotalValue == 620000,
+              "alternative guaranteed total includes two buyer rewards");
+        check(result.eliteChallenge.teamBonusValue == 200000,
+              "alternative elite reward is paid to both players");
+        check(result.eliteChallenge.referenceTotalValue == 820000,
+              "potential elite reward appears only in the reference total");
+        check(!result.eliteChallenge.sameAsPrimaryPlan,
+              "a distinct elite reference allocation is retained");
     }
 
     std::cout << "optimizer tests passed\n";

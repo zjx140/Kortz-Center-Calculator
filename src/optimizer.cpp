@@ -48,7 +48,8 @@ constexpr int kMaximumPlayers = 4;
 OptimizationResult optimizeLoot(const std::vector<LootInput>& inputs,
                                 int playerCount,
                                 int capacityPerPlayerPercent,
-                                std::int64_t designatedSetBonus) {
+                                std::int64_t designatedBonusPerPlayer,
+                                std::int64_t eliteChallengeBonusPerPlayer) {
     OptimizationResult result;
     playerCount = std::clamp(playerCount, 1, kMaximumPlayers);
     result.playerCount = playerCount;
@@ -213,10 +214,10 @@ OptimizationResult optimizeLoot(const std::vector<LootInput>& inputs,
         candidate.stateKey = selectedStateKey;
         candidate.allDesignatedTaken = allDesignatedTaken;
         candidate.bonusEarned = allDesignatedTaken && result.designatedQuantity > 0 &&
-                                designatedSetBonus > 0;
+                                designatedBonusPerPlayer > 0;
         candidate.lootValue = selected->second.value;
         candidate.totalValue = candidate.lootValue +
-            (candidate.bonusEarned ? designatedSetBonus : 0);
+            (candidate.bonusEarned ? designatedBonusPerPlayer * playerCount : 0);
         candidate.minimumUsed = selectedUsed[0];
         for (int player = 0; player < playerCount; ++player) {
             const int used = selectedUsed[static_cast<std::size_t>(player)];
@@ -276,26 +277,94 @@ OptimizationResult optimizeLoot(const std::vector<LootInput>& inputs,
     result.allBagsFull = selectedCandidate.allBagsFull;
     result.allDesignatedTaken = selectedCandidate.allDesignatedTaken;
     result.designatedBonusEarned = selectedCandidate.bonusEarned;
-    result.designatedBonusValue = selectedCandidate.bonusEarned ? designatedSetBonus : 0;
+    result.designatedBonusPerPlayer =
+        selectedCandidate.bonusEarned ? designatedBonusPerPlayer : 0;
+    result.designatedBonusValue =
+        selectedCandidate.bonusEarned ? designatedBonusPerPlayer * playerCount : 0;
     result.lootValue = selectedCandidate.lootValue;
     result.totalValue = selectedCandidate.totalValue;
+    result.lootShare = {
+        result.lootValue / playerCount,
+        result.lootValue % playerCount,
+    };
+    result.guaranteedShare = {
+        result.totalValue / playerCount,
+        result.totalValue % playerCount,
+    };
 
-    std::vector<std::vector<int>> chosenCounts(
-        static_cast<std::size_t>(playerCount), std::vector<int>(inputs.size(), 0));
-    for (auto decision = selectedCandidate.decision; decision; decision = decision->previous) {
-        ++chosenCounts[static_cast<std::size_t>(decision->playerIndex)][decision->inputIndex];
-    }
+    const auto buildPlayerResults = [&](const Candidate& candidate) {
+        std::vector<std::vector<int>> chosenCounts(
+            static_cast<std::size_t>(playerCount), std::vector<int>(inputs.size(), 0));
+        for (auto decision = candidate.decision; decision; decision = decision->previous) {
+            ++chosenCounts[static_cast<std::size_t>(decision->playerIndex)][decision->inputIndex];
+        }
 
-    const auto selectedUsed = decodeState(selectedCandidate.stateKey);
-    for (int player = 0; player < playerCount; ++player) {
-        auto& playerResult = result.players[static_cast<std::size_t>(player)];
-        playerResult.usedCapacityPercent =
-            selectedUsed[static_cast<std::size_t>(player)] * capacityUnit;
-        for (std::size_t inputIndex = 0; inputIndex < inputs.size(); ++inputIndex) {
-            const int count = chosenCounts[static_cast<std::size_t>(player)][inputIndex];
-            if (count > 0) {
-                playerResult.selections.push_back({inputIndex, count});
-                playerResult.totalValue += inputs[inputIndex].unitValue * count;
+        std::vector<PlayerResult> playerResults(static_cast<std::size_t>(playerCount));
+        const auto selectedUsed = decodeState(candidate.stateKey);
+        for (int player = 0; player < playerCount; ++player) {
+            auto& playerResult = playerResults[static_cast<std::size_t>(player)];
+            playerResult.usedCapacityPercent =
+                selectedUsed[static_cast<std::size_t>(player)] * capacityUnit;
+            for (std::size_t inputIndex = 0; inputIndex < inputs.size(); ++inputIndex) {
+                const int count = chosenCounts[static_cast<std::size_t>(player)][inputIndex];
+                if (count > 0) {
+                    playerResult.selections.push_back({inputIndex, count});
+                    playerResult.totalValue += inputs[inputIndex].unitValue * count;
+                }
+            }
+        }
+        return playerResults;
+    };
+
+    result.players = buildPlayerResults(selectedCandidate);
+
+    if (designatedCandidate.available && designatedCandidate.allDesignatedTaken &&
+        eliteChallengeBonusPerPlayer > 0) {
+        auto& elite = result.eliteChallenge;
+        elite.available = true;
+        elite.allBagsFull = designatedCandidate.allBagsFull;
+        elite.lootValue = designatedCandidate.lootValue;
+        elite.buyerDesignatedBonusPerPlayer =
+            designatedCandidate.bonusEarned ? designatedBonusPerPlayer : 0;
+        elite.buyerDesignatedBonusValue =
+            designatedCandidate.bonusEarned ? designatedBonusPerPlayer * playerCount : 0;
+        elite.guaranteedTotalValue = designatedCandidate.totalValue;
+        elite.bonusPerPlayer = eliteChallengeBonusPerPlayer;
+        elite.teamBonusValue = eliteChallengeBonusPerPlayer * playerCount;
+        elite.referenceTotalValue = elite.guaranteedTotalValue + elite.teamBonusValue;
+        elite.lootShare = {
+            elite.lootValue / playerCount,
+            elite.lootValue % playerCount,
+        };
+        elite.guaranteedShare = {
+            elite.guaranteedTotalValue / playerCount,
+            elite.guaranteedTotalValue % playerCount,
+        };
+        elite.referenceShare = {
+            elite.referenceTotalValue / playerCount,
+            elite.referenceTotalValue % playerCount,
+        };
+        elite.players = buildPlayerResults(designatedCandidate);
+        elite.sameAsPrimaryPlan = elite.players.size() == result.players.size();
+        for (std::size_t playerIndex = 0;
+             elite.sameAsPrimaryPlan && playerIndex < elite.players.size(); ++playerIndex) {
+            const auto& elitePlayer = elite.players[playerIndex];
+            const auto& primaryPlayer = result.players[playerIndex];
+            if (elitePlayer.totalValue != primaryPlayer.totalValue ||
+                elitePlayer.usedCapacityPercent != primaryPlayer.usedCapacityPercent ||
+                elitePlayer.selections.size() != primaryPlayer.selections.size()) {
+                elite.sameAsPrimaryPlan = false;
+                break;
+            }
+            for (std::size_t selectionIndex = 0;
+                 selectionIndex < elitePlayer.selections.size(); ++selectionIndex) {
+                const auto& eliteSelection = elitePlayer.selections[selectionIndex];
+                const auto& primarySelection = primaryPlayer.selections[selectionIndex];
+                if (eliteSelection.inputIndex != primarySelection.inputIndex ||
+                    eliteSelection.quantity != primarySelection.quantity) {
+                    elite.sameAsPrimaryPlan = false;
+                    break;
+                }
             }
         }
     }

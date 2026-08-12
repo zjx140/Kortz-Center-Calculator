@@ -138,6 +138,16 @@ std::wstring formatCurrency(std::int64_t value) {
     return L"$" + formatNumber(value);
 }
 
+std::wstring formatPerPlayerShare(const kortz::EqualShare& share) {
+    std::wstring text = formatCurrency(share.perPlayer) + L" / 人";
+    if (share.roundingRemainder != 0) {
+        text = L"约 " + text + L"（余 " +
+               formatCurrency(share.roundingRemainder) +
+               L" 由游戏最终结算取整）";
+    }
+    return text;
+}
+
 std::wstring getWindowText(HWND window) {
     const int length = GetWindowTextLengthW(window);
     std::wstring text(static_cast<std::size_t>(length + 1), L'\0');
@@ -175,7 +185,7 @@ bool isMultiplayer() {
     return playerCount() >= 2;
 }
 
-std::int64_t designatedBonus() {
+std::int64_t rewardPerChallenge() {
     return ComboBox_GetCurSel(g_difficultyCombo) == 1 ? 100000 : 50000;
 }
 
@@ -266,8 +276,8 @@ void rebuildDifficultyOptions() {
     const int previousSelection = std::max(0, ComboBox_GetCurSel(g_difficultyCombo));
     ComboBox_ResetContent(g_difficultyCombo);
     const wchar_t* options[] = {
-        L"简单（奖励 $50,000）",
-        L"困难（奖励 $100,000）",
+        L"简单（每项奖励 $50,000）",
+        L"困难（每项奖励 $100,000）",
     };
     for (const auto* option : options) {
         const auto displayed = localize(option);
@@ -473,11 +483,12 @@ void calculateAndDisplay() {
     }
 
     const int players = playerCount();
-    const auto bonus = designatedBonus();
-    const auto result = kortz::optimizeLoot(g_inputs, players, 100, bonus);
+    const auto reward = rewardPerChallenge();
+    const auto result = kortz::optimizeLoot(g_inputs, players, 100, reward, reward);
     std::wostringstream output;
     output << L"游玩人数：" << players << L" 人    难度："
-           << (bonus == 100000 ? L"困难" : L"简单") << L"\r\n";
+           << (reward == 100000 ? L"困难" : L"简单") << L"\r\n\r\n"
+           << L"【确定收益最优方案】\r\n";
     if (players >= 2 && !result.allBagsFull) {
         output << L"结论：现有目标无法让所有玩家都恰好装满 100% 背包。\r\n"
                << L"下面显示最接近的均衡分配，仅供调整侦察清单时参考。\r\n"
@@ -488,56 +499,136 @@ void calculateAndDisplay() {
             output << L"结果：所有玩家背包均已装满 100%。\r\n";
         }
     }
-    if (result.designatedQuantity == 0) {
-        output << L"指定目标奖励：未标记买家指定目标，不计奖励。\r\n";
-    } else if (result.excludedDesignated202Quantity > 0) {
-        output << L"指定目标奖励：无法获得；有 "
-               << result.excludedDesignated202Quantity
-               << L" 件买家指定目标位于 202 展览室，单人无法拿取。\r\n";
-    } else if (result.designatedBonusEarned) {
-        output << L"指定目标奖励：已拿齐 " << result.designatedQuantity << L" 件，获得 "
-               << formatCurrency(result.designatedBonusValue) << L"。\r\n";
-    } else {
-        output << L"指定目标奖励：未获得；最高总收益方案没有拿齐全部 "
-               << result.designatedQuantity << L" 件指定目标。\r\n";
+    if (players >= 2) {
+        output << L"目标价值平分：" << formatCurrency(result.lootValue) << L" ÷ "
+               << players << L" 人 = "
+               << formatPerPlayerShare(result.lootShare) << L"\r\n";
     }
-    output << (players >= 2 ? L"团队总收益：" : L"总收益：")
-           << formatCurrency(result.totalValue) << L"\r\n\r\n";
-
-    std::vector<int> chosen(g_inputs.size(), 0);
-    for (std::size_t playerIndex = 0; playerIndex < result.players.size(); ++playerIndex) {
-        const auto& player = result.players[playerIndex];
-        output << L"玩家 " << (playerIndex + 1) << L"："
-               << player.usedCapacityPercent << L"% / 100%，"
-               << formatCurrency(player.totalValue) << L"\r\n";
-        if (player.selections.empty()) {
-            output << L"  • 无可拿取目标\r\n";
+    if (result.designatedQuantity == 0) {
+        output << L"买家请求奖励：未标记买家指定物品，不计奖励。\r\n";
+    } else if (result.excludedDesignated202Quantity > 0) {
+        output << L"买家请求奖励：无法获得；有 "
+               << result.excludedDesignated202Quantity
+               << L" 件买家指定物品位于 202 展览室，单人无法拿取。\r\n";
+    } else if (result.designatedBonusEarned) {
+        output << L"买家请求奖励：已拿齐 " << result.designatedQuantity << L" 件，";
+        if (players >= 2) {
+            output << formatCurrency(result.designatedBonusPerPlayer) << L" / 人 × "
+                   << players << L" 人 = "
+                   << formatCurrency(result.designatedBonusValue) << L"。\r\n";
         } else {
-            for (const auto& selection : player.selections) {
-                chosen[selection.inputIndex] += selection.quantity;
-                const auto& input = g_inputs[selection.inputIndex];
-                const auto subtotal = input.unitValue * selection.quantity;
-                output << L"  • " << (input.buyerDesignated ? L"【买家指定】" : L"")
-                       << input.name << L"［" << input.location << L"］ × "
-                       << selection.quantity << L"  —  "
-                       << input.capacityPercent * selection.quantity << L"%，"
-                       << formatCurrency(subtotal) << L"\r\n";
+            output << L"确定获得 " << formatCurrency(result.designatedBonusValue)
+                   << L"。\r\n";
+        }
+    } else {
+        output << L"买家请求奖励：当前确定收益最优方案没有拿齐全部 "
+               << result.designatedQuantity << L" 件指定物品，因此不计奖励。\r\n";
+    }
+    if (players >= 2) {
+        output << L"确定团队总收益：" << formatCurrency(result.totalValue) << L"\r\n"
+               << L"每人确定所得："
+               << formatPerPlayerShare(result.guaranteedShare) << L"\r\n\r\n";
+    } else {
+        output << L"确定总收益：" << formatCurrency(result.totalValue) << L"\r\n\r\n";
+    }
+
+    const auto appendPlanDetails = [&](const std::vector<kortz::PlayerResult>& planPlayers) {
+        if (players >= 2) {
+            output << L"背包携带分配（携带价值不等于个人所得，目标价值由全队平分）：\r\n";
+        }
+        std::vector<int> chosen(g_inputs.size(), 0);
+        for (std::size_t playerIndex = 0; playerIndex < planPlayers.size(); ++playerIndex) {
+            const auto& player = planPlayers[playerIndex];
+            output << L"玩家 " << (playerIndex + 1) << L" 背包："
+                   << player.usedCapacityPercent << L"% / 100%，"
+                   << L"携带目标价值 " << formatCurrency(player.totalValue) << L"\r\n";
+            if (player.selections.empty()) {
+                output << L"  • 无可拿取目标\r\n";
+            } else {
+                for (const auto& selection : player.selections) {
+                    chosen[selection.inputIndex] += selection.quantity;
+                    const auto& input = g_inputs[selection.inputIndex];
+                    const auto subtotal = input.unitValue * selection.quantity;
+                    output << L"  • " << (input.buyerDesignated ? L"【买家指定】" : L"")
+                           << input.name << L"［" << input.location << L"］ × "
+                           << selection.quantity << L"  —  "
+                           << input.capacityPercent * selection.quantity << L"%，"
+                           << formatCurrency(subtotal) << L"\r\n";
+                }
+            }
+            output << L"\r\n";
+        }
+
+        bool hasUnselected = false;
+        for (std::size_t i = 0; i < g_inputs.size(); ++i) {
+            const int remaining = g_inputs[i].quantity - chosen[i];
+            if (remaining > 0 && !(g_inputs[i].requiresMultiplayer && !isMultiplayer())) {
+                if (!hasUnselected) {
+                    output << L"本方案无需拿取：\r\n";
+                    hasUnselected = true;
+                }
+                output << L"  • " << (g_inputs[i].buyerDesignated ? L"【买家指定】" : L"")
+                       << g_inputs[i].name << L"［" << g_inputs[i].location << L"］ × "
+                       << remaining << L"\r\n";
             }
         }
-        output << L"\r\n";
-    }
+    };
 
-    bool hasUnselected = false;
-    for (std::size_t i = 0; i < g_inputs.size(); ++i) {
-        const int remaining = g_inputs[i].quantity - chosen[i];
-        if (remaining > 0 && !(g_inputs[i].requiresMultiplayer && !isMultiplayer())) {
-            if (!hasUnselected) {
-                output << L"无需拿取：\r\n";
-                hasUnselected = true;
-            }
-            output << L"  • " << (g_inputs[i].buyerDesignated ? L"【买家指定】" : L"")
-                   << g_inputs[i].name << L"［" << g_inputs[i].location << L"］ × "
-                   << remaining << L"\r\n";
+    appendPlanDetails(result.players);
+
+    output << L"\r\n";
+    if (result.designatedQuantity == 0) {
+        output << L"【精英挑战参考】\r\n"
+               << L"未标记买家指定物品，暂不生成精英挑战参考方案。\r\n";
+    } else if (result.excludedDesignated202Quantity > 0) {
+        output << L"【精英挑战参考】\r\n"
+               << L"不考虑：有 " << result.excludedDesignated202Quantity
+               << L" 件买家指定物品位于 202 展览室，当前单人无法拿齐。\r\n";
+    } else if (!result.eliteChallenge.available) {
+        output << L"【精英挑战参考】\r\n"
+               << L"不考虑：现有目标和背包容量无法同时拿齐全部 "
+               << result.designatedQuantity << L" 件买家指定物品。\r\n";
+    } else {
+        const auto& elite = result.eliteChallenge;
+        output << L"【精英挑战参考方案】\r\n"
+               << L"此方案可以拿齐全部 " << result.designatedQuantity
+               << L" 件买家指定物品，但这只是精英挑战的一个必要条件。\r\n"
+               << L"还需满足其他精英挑战条件；以下精英奖励仅作潜在所得参考。\r\n";
+        if (players >= 2 && !elite.allBagsFull) {
+            output << L"提示：此参考分配未能让所有玩家恰好装满 100% 背包。\r\n";
+        }
+        output << L"目标本身价值：" << formatCurrency(elite.lootValue) << L"\r\n"
+               << L"买家请求奖励（独立、确定）："
+               << formatCurrency(elite.buyerDesignatedBonusPerPlayer)
+               << L" / 人 × " << players << L" 人 = "
+               << formatCurrency(elite.buyerDesignatedBonusValue) << L"\r\n";
+        if (players >= 2) {
+            output << L"目标价值平分：" << formatCurrency(elite.lootValue) << L" ÷ "
+                   << players << L" 人 = "
+                   << formatPerPlayerShare(elite.lootShare) << L"\r\n"
+                   << L"不含精英挑战的确定团队总收益："
+                   << formatCurrency(elite.guaranteedTotalValue) << L"\r\n"
+                   << L"每人确定所得："
+                   << formatPerPlayerShare(elite.guaranteedShare) << L"\r\n";
+        } else {
+            output << L"不含精英挑战的确定总收益："
+                   << formatCurrency(elite.guaranteedTotalValue) << L"\r\n";
+        }
+        output << L"潜在精英挑战奖励：" << formatCurrency(elite.bonusPerPlayer)
+               << L" / 人 × " << players << L" 人 = "
+               << formatCurrency(elite.teamBonusValue) << L"\r\n"
+               << (players >= 2 ? L"参考最终团队所得（完成精英挑战时）：" :
+                                  L"参考最终所得（完成精英挑战时）：")
+               << formatCurrency(elite.referenceTotalValue) << L"\r\n";
+        if (players >= 2) {
+            output << L"每人参考最终所得："
+                   << formatPerPlayerShare(elite.referenceShare) << L"\r\n";
+        }
+        output << L"\r\n";
+        if (elite.sameAsPrimaryPlan) {
+            output << L"拿取方案与上方确定收益最优方案相同，不再重复列出。\r\n";
+        } else {
+            appendPlanDetails(elite.players);
         }
     }
 
@@ -545,6 +636,11 @@ void calculateAndDisplay() {
         output << L"\r\n提示：当前为单人游玩，已自动排除 "
                << result.excluded202Quantity << L" 件 202 展览室目标。";
     }
+    output << L"\r\n\r\n注意：此收益并非最终收益，尚未计算主要目标和脱身载具报酬；"
+           << L"队长需要加上主要目标及脱身载具报酬（脱身载具报酬仅由队长获得），"
+           << L"队员需要加上 $100,000（简单）/$200,000（困难）。当前为"
+           << (reward == 100000 ? L"困难难度，每名队员加上 $200,000。" :
+                                  L"简单难度，每名队员加上 $100,000。");
     setLocalizedText(g_resultEdit, output.str());
 }
 
