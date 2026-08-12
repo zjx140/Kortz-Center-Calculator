@@ -20,6 +20,7 @@ add_executable(KortzCenterCalculator WIN32
 target_link_libraries(KortzCenterCalculator PRIVATE
     kortz_optimizer
     comctl32
+    imm32
     uxtheme
 )
 target_compile_definitions(KortzCenterCalculator PRIVATE UNICODE _UNICODE)

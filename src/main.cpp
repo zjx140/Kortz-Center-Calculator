@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <imm.h>
 #include <uxtheme.h>
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -88,8 +90,11 @@ std::vector<CatalogItem> g_catalog;
 std::vector<kortz::LootInput> g_inputs;
 bool g_traditionalChinese = false;
 bool g_uiInitialized = false;
+bool g_rebuildingTargetOptions = false;
+std::wstring g_targetFilterText;
 
 void refreshLanguageUi();
+void updateReferenceLabel();
 
 std::wstring localize(std::wstring_view simplified) {
     if (!g_traditionalChinese || simplified.empty()) {
@@ -271,19 +276,111 @@ void rebuildDifficultyOptions() {
     ComboBox_SetCurSel(g_difficultyCombo, previousSelection);
 }
 
-void rebuildTargetOptions() {
-    const int previousSelection = std::max(0, ComboBox_GetCurSel(g_targetCombo));
+std::optional<std::size_t> selectedCatalogIndex() {
+    const int selection = ComboBox_GetCurSel(g_targetCombo);
+    if (selection == CB_ERR) {
+        return std::nullopt;
+    }
+    const LRESULT itemData = ComboBox_GetItemData(g_targetCombo, selection);
+    if (itemData == CB_ERR || itemData < 0 ||
+        static_cast<std::size_t>(itemData) >= g_catalog.size()) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(itemData);
+}
+
+std::wstring targetDisplayLabel(const CatalogItem& item) {
+    const std::wstring label = item.name + L"  ·  " + item.location + L"  ·  " +
+                               std::to_wstring(item.capacityPercent) + L"%";
+    return localize(label);
+}
+
+bool containsCaseInsensitive(std::wstring_view text, std::wstring_view query) {
+    if (query.empty()) {
+        return true;
+    }
+    std::wstring loweredText(text);
+    std::wstring loweredQuery(query);
+    std::transform(loweredText.begin(), loweredText.end(), loweredText.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+    std::transform(loweredQuery.begin(), loweredQuery.end(), loweredQuery.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+    return loweredText.find(loweredQuery) != std::wstring::npos;
+}
+
+void populateTargetOptions(std::wstring_view filter,
+                           std::optional<std::size_t> preservedCatalogIndex,
+                           bool selectFirstWhenNeeded) {
+    g_rebuildingTargetOptions = true;
     ComboBox_ResetContent(g_targetCombo);
-    for (const auto& item : g_catalog) {
-        const std::wstring label = item.name + L"  ·  " + item.location + L"  ·  " +
-                                   std::to_wstring(item.capacityPercent) + L"%";
-        const auto displayed = localize(label);
-        ComboBox_AddString(g_targetCombo, displayed.c_str());
+    int preservedComboIndex = CB_ERR;
+    for (std::size_t catalogIndex = 0; catalogIndex < g_catalog.size(); ++catalogIndex) {
+        const auto displayed = targetDisplayLabel(g_catalog[catalogIndex]);
+        if (!containsCaseInsensitive(displayed, filter)) {
+            continue;
+        }
+        const int comboIndex = ComboBox_AddString(g_targetCombo, displayed.c_str());
+        if (comboIndex != CB_ERR && comboIndex != CB_ERRSPACE) {
+            ComboBox_SetItemData(g_targetCombo, comboIndex,
+                                 static_cast<LPARAM>(catalogIndex));
+            if (preservedCatalogIndex && *preservedCatalogIndex == catalogIndex) {
+                preservedComboIndex = comboIndex;
+            }
+        }
     }
-    if (!g_catalog.empty()) {
-        ComboBox_SetCurSel(g_targetCombo,
-            std::min(previousSelection, static_cast<int>(g_catalog.size()) - 1));
+
+    if (preservedComboIndex != CB_ERR) {
+        ComboBox_SetCurSel(g_targetCombo, preservedComboIndex);
+    } else if (selectFirstWhenNeeded && ComboBox_GetCount(g_targetCombo) > 0) {
+        ComboBox_SetCurSel(g_targetCombo, 0);
+    } else {
+        SetWindowTextW(g_targetCombo, std::wstring(filter).c_str());
+        SendMessageW(g_targetCombo, CB_SETEDITSEL, 0,
+                     MAKELPARAM(static_cast<int>(filter.size()), static_cast<int>(filter.size())));
     }
+    g_rebuildingTargetOptions = false;
+}
+
+void rebuildTargetOptions() {
+    const auto preservedCatalogIndex = selectedCatalogIndex();
+    g_targetFilterText.clear();
+    populateTargetOptions(L"", preservedCatalogIndex, true);
+}
+
+void filterTargetOptionsFromEdit() {
+    if (g_rebuildingTargetOptions) {
+        return;
+    }
+    COMBOBOXINFO comboInfo{sizeof(comboInfo)};
+    if (GetComboBoxInfo(g_targetCombo, &comboInfo) && comboInfo.hwndItem) {
+        HIMC inputContext = ImmGetContext(comboInfo.hwndItem);
+        if (inputContext) {
+            const bool composing =
+                ImmGetCompositionStringW(inputContext, GCS_COMPSTR, nullptr, 0) > 0;
+            ImmReleaseContext(comboInfo.hwndItem, inputContext);
+            if (composing) {
+                return;
+            }
+        }
+    }
+    const auto query = getWindowText(g_targetCombo);
+    const int selection = ComboBox_GetCurSel(g_targetCombo);
+    if (selection != CB_ERR) {
+        const int labelLength = ComboBox_GetLBTextLen(g_targetCombo, selection);
+        if (labelLength >= 0) {
+            std::wstring selectedLabel(static_cast<std::size_t>(labelLength + 1), L'\0');
+            ComboBox_GetLBText(g_targetCombo, selection, selectedLabel.data());
+            selectedLabel.resize(static_cast<std::size_t>(labelLength));
+            if (query == selectedLabel) {
+                return;
+            }
+        }
+    }
+
+    g_targetFilterText = query;
+    populateTargetOptions(g_targetFilterText, std::nullopt, false);
+    ComboBox_ShowDropdown(g_targetCombo, TRUE);
+    updateReferenceLabel();
 }
 
 void updateListColumnHeaders() {
@@ -299,12 +396,20 @@ void updateListColumnHeaders() {
 }
 
 void updateReferenceLabel() {
-    const int selection = ComboBox_GetCurSel(g_targetCombo);
-    if (selection < 0 || static_cast<std::size_t>(selection) >= g_catalog.size()) {
-        setLocalizedText(g_referenceLabel, L"请选择目标。实际价值以侦察结果为准。");
+    const auto catalogIndex = selectedCatalogIndex();
+    if (!catalogIndex) {
+        const int matchCount = ComboBox_GetCount(g_targetCombo);
+        if (!g_targetFilterText.empty()) {
+            const std::wstring message = L"快速搜索：“" + g_targetFilterText + L"”，找到 " +
+                                         std::to_wstring(std::max(0, matchCount)) +
+                                         L" 项；请选择一个目标。";
+            setLocalizedText(g_referenceLabel, message);
+        } else {
+            setLocalizedText(g_referenceLabel, L"请选择目标。实际价值以侦察结果为准。");
+        }
         return;
     }
-    const auto& item = g_catalog[static_cast<std::size_t>(selection)];
+    const auto& item = g_catalog[*catalogIndex];
     std::wstring text = L"参考区间：" + formatCurrency(item.minValue) + L" – " +
                         formatCurrency(item.maxValue) + L"    背包占用：" +
                         std::to_wstring(item.capacityPercent) + L"%    地点：" + item.location;
@@ -444,13 +549,13 @@ void calculateAndDisplay() {
 }
 
 void addCurrentTarget() {
-    const int selection = ComboBox_GetCurSel(g_targetCombo);
-    if (selection < 0 || static_cast<std::size_t>(selection) >= g_catalog.size()) {
-        showLocalizedMessage(L"请先选择侦察到的目标。", L"缺少目标",
+    auto catalogIndex = selectedCatalogIndex();
+    if (!catalogIndex) {
+        showLocalizedMessage(L"请从快速搜索结果中选择一个目标。", L"缺少目标",
                              MB_OK | MB_ICONINFORMATION);
         return;
     }
-    const auto& catalogItem = g_catalog[static_cast<std::size_t>(selection)];
+    const auto& catalogItem = g_catalog[*catalogIndex];
     std::int64_t value = 0;
     if (!parsePositiveInteger(getWindowText(g_valueEdit), value)) {
         showLocalizedMessage(L"请输入大于 0 的实际价值。可使用逗号，例如 127,500。",
@@ -529,12 +634,12 @@ void layoutControls(int width, int height) {
         int height;
     };
     const std::array<ControlPlacement, 26> placements{{
-        {g_titleLabel, margin, 15, contentWidth - 460, 40},
-        {g_subtitleLabel, margin, 58, contentWidth - 460, 28},
-        {g_languageLabel, width - margin - 445, 29, 85, 30},
-        {g_languageCombo, width - margin - 355, 24, 120, 180},
-        {g_playerCountLabel, width - margin - 220, 29, 80, 30},
-        {g_playerCountCombo, width - margin - 135, 24, 135, 180},
+        {g_titleLabel, margin, 15, contentWidth - 515, 40},
+        {g_subtitleLabel, margin, 58, contentWidth - 515, 28},
+        {g_languageLabel, width - margin - 500, 29, 90, 30},
+        {g_languageCombo, width - margin - 405, 24, 130, 180},
+        {g_playerCountLabel, width - margin - 265, 29, 85, 30},
+        {g_playerCountCombo, width - margin - 175, 24, 175, 180},
 
         {g_inputGroup, margin, 98, contentWidth, 166},
         {g_targetLabel, margin + 18, 127, comboWidth, 25},
@@ -546,8 +651,8 @@ void layoutControls(int width, int height) {
         {g_designatedCheck, margin + 274 + comboWidth, 153, 150, 34},
         {g_addButton, margin + 434 + comboWidth, 151, 145, 38},
         {g_difficultyLabel, margin + 18, 207, 80, 30},
-        {g_difficultyCombo, margin + 103, 202, 210, 180},
-        {g_referenceLabel, margin + 330, 207, contentWidth - 348, 32},
+        {g_difficultyCombo, margin + 103, 202, 270, 180},
+        {g_referenceLabel, margin + 390, 207, contentWidth - 408, 32},
 
         {g_listGroup, margin, listTop, contentWidth, listGroupHeight},
         {g_lootList, margin + 14, listViewTop, contentWidth - 28, listViewHeight},
@@ -633,7 +738,8 @@ void createUi() {
     g_valueLabel = makeControl(0, L"STATIC", L"实际价值（$）", SS_LEFT, 0);
     g_quantityLabel = makeControl(0, L"STATIC", L"数量", SS_LEFT, 0);
     g_targetCombo = makeControl(WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"",
-                                CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP,
+                                CBS_DROPDOWN | CBS_HASSTRINGS | CBS_AUTOHSCROLL |
+                                    WS_VSCROLL | WS_TABSTOP,
                                 IDC_TARGET_COMBO);
     g_valueEdit = makeControl(WS_EX_CLIENTEDGE, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP,
                               IDC_VALUE_EDIT);
@@ -717,7 +823,7 @@ void refreshLanguageUi() {
     setLocalizedText(g_languageLabel, L"界面语言");
     setLocalizedText(g_playerCountLabel, L"游玩人数");
     setLocalizedText(g_inputGroup, L"1. 添加侦察目标");
-    setLocalizedText(g_targetLabel, L"目标与地点");
+    setLocalizedText(g_targetLabel, L"目标与地点（可输入关键字）");
     setLocalizedText(g_valueLabel, L"实际价值（$）");
     setLocalizedText(g_quantityLabel, L"数量");
     setLocalizedText(g_designatedCheck, L"买家指定目标");
@@ -765,9 +871,23 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             refreshLanguageUi();
             return 0;
         }
-        if (id == IDC_TARGET_COMBO && notification == CBN_SELCHANGE) {
-            updateReferenceLabel();
-            return 0;
+        if (id == IDC_TARGET_COMBO) {
+            if (notification == CBN_EDITCHANGE) {
+                filterTargetOptionsFromEdit();
+                return 0;
+            }
+            if (notification == CBN_SELCHANGE) {
+                g_targetFilterText.clear();
+                updateReferenceLabel();
+                return 0;
+            }
+            if (notification == CBN_CLOSEUP && !selectedCatalogIndex() &&
+                ComboBox_GetCount(g_targetCombo) == 1) {
+                ComboBox_SetCurSel(g_targetCombo, 0);
+                g_targetFilterText.clear();
+                updateReferenceLabel();
+                return 0;
+            }
         }
         if (id == IDC_PLAYER_COUNT && notification == CBN_SELCHANGE) {
             updateReferenceLabel();
