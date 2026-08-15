@@ -26,6 +26,7 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"KortzCenterCalculatorWindow";
 constexpr COLORREF kTextColor = RGB(29, 45, 50);
 constexpr COLORREF kMutedColor = RGB(87, 107, 112);
+constexpr UINT kRefreshTargetOptionsMessage = WM_APP + 1;
 
 enum ControlId {
     IDC_PLAYER_COUNT = 100,
@@ -33,7 +34,6 @@ enum ControlId {
     IDC_DIFFICULTY,
     IDC_TARGET_COMBO,
     IDC_VALUE_EDIT,
-    IDC_QUANTITY_EDIT,
     IDC_DESIGNATED,
     IDC_ADD_BUTTON,
     IDC_REFERENCE_LABEL,
@@ -67,7 +67,6 @@ HWND g_difficultyCombo = nullptr;
 HWND g_difficultyLabel = nullptr;
 HWND g_targetCombo = nullptr;
 HWND g_valueEdit = nullptr;
-HWND g_quantityEdit = nullptr;
 HWND g_designatedCheck = nullptr;
 HWND g_addButton = nullptr;
 HWND g_referenceLabel = nullptr;
@@ -84,7 +83,6 @@ HWND g_titleLabel = nullptr;
 HWND g_subtitleLabel = nullptr;
 HWND g_targetLabel = nullptr;
 HWND g_valueLabel = nullptr;
-HWND g_quantityLabel = nullptr;
 
 std::vector<CatalogItem> g_catalog;
 std::vector<kortz::LootInput> g_inputs;
@@ -305,6 +303,13 @@ std::wstring targetDisplayLabel(const CatalogItem& item) {
     return localize(label);
 }
 
+bool targetNameAlreadyAdded(std::wstring_view name) {
+    return std::any_of(g_inputs.begin(), g_inputs.end(),
+                       [name](const kortz::LootInput& input) {
+                           return input.name == name;
+                       });
+}
+
 bool containsCaseInsensitive(std::wstring_view text, std::wstring_view query) {
     if (query.empty()) {
         return true;
@@ -325,6 +330,9 @@ void populateTargetOptions(std::wstring_view filter,
     ComboBox_ResetContent(g_targetCombo);
     int preservedComboIndex = CB_ERR;
     for (std::size_t catalogIndex = 0; catalogIndex < g_catalog.size(); ++catalogIndex) {
+        if (targetNameAlreadyAdded(g_catalog[catalogIndex].name)) {
+            continue;
+        }
         const auto displayed = targetDisplayLabel(g_catalog[catalogIndex]);
         if (!containsCaseInsensitive(displayed, filter)) {
             continue;
@@ -395,8 +403,8 @@ void filterTargetOptionsFromEdit() {
 
 void updateListColumnHeaders() {
     const wchar_t* columns[] = {
-        L"目标", L"地点", L"单件价值", L"单件占用", L"数量", L"买家指定", L"状态"};
-    for (int index = 0; index < 7; ++index) {
+        L"目标", L"地点", L"价值", L"背包占用", L"买家指定", L"状态"};
+    for (int index = 0; index < 6; ++index) {
         auto displayed = localize(columns[index]);
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT;
@@ -410,10 +418,18 @@ void updateReferenceLabel() {
     if (!catalogIndex) {
         const int matchCount = ComboBox_GetCount(g_targetCombo);
         if (!g_targetFilterText.empty()) {
-            const std::wstring message = L"快速搜索：“" + g_targetFilterText + L"”，找到 " +
-                                         std::to_wstring(std::max(0, matchCount)) +
-                                         L" 项；请选择一个目标。";
-            setLocalizedText(g_referenceLabel, message);
+            if (matchCount > 0) {
+                const std::wstring message =
+                    L"快速搜索：“" + g_targetFilterText + L"”，找到 " +
+                    std::to_wstring(matchCount) + L" 项；请选择一个目标。";
+                setLocalizedText(g_referenceLabel, message);
+            } else {
+                setLocalizedText(g_referenceLabel,
+                                 L"没有找到匹配的目标，请更换搜索关键字。");
+            }
+        } else if (matchCount == 0 && !g_inputs.empty()) {
+            setLocalizedText(g_referenceLabel,
+                             L"所有可选物品均已加入清单；移除物品后会重新出现在选项中。");
         } else {
             setLocalizedText(g_referenceLabel, L"请选择目标。实际价值以侦察结果为准。");
         }
@@ -448,37 +464,30 @@ void refreshListView() {
         ListView_SetItemText(g_lootList, static_cast<int>(i), 2, value.data());
         auto capacity = std::to_wstring(input.capacityPercent) + L"%";
         ListView_SetItemText(g_lootList, static_cast<int>(i), 3, capacity.data());
-        auto quantity = std::to_wstring(input.quantity);
-        ListView_SetItemText(g_lootList, static_cast<int>(i), 4, quantity.data());
         const auto designated = localize(input.buyerDesignated ? L"是" : L"否");
-        ListView_SetItemText(g_lootList, static_cast<int>(i), 5,
+        ListView_SetItemText(g_lootList, static_cast<int>(i), 4,
                              const_cast<wchar_t*>(designated.c_str()));
         const std::wstring availability = localize(
             input.requiresMultiplayer && !isMultiplayer() ? L"已排除" : L"可参与");
-        ListView_SetItemText(g_lootList, static_cast<int>(i), 6,
+        ListView_SetItemText(g_lootList, static_cast<int>(i), 5,
                              const_cast<wchar_t*>(availability.c_str()));
     }
     int designatedCount = 0;
-    const auto totalQuantity = [&] {
-        int count = 0;
-        for (const auto& input : g_inputs) {
-            count += input.quantity;
-            if (input.buyerDesignated) {
-                designatedCount += input.quantity;
-            }
+    for (const auto& input : g_inputs) {
+        if (input.buyerDesignated) {
+            ++designatedCount;
         }
-        return count;
-    }();
+    }
     const std::wstring status = L"已录入 " + std::to_wstring(g_inputs.size()) +
-                                L" 类目标，共 " + std::to_wstring(totalQuantity) +
-                                L" 件；买家指定 " + std::to_wstring(designatedCount) + L" 件";
+                                L" 件物品；买家指定 " +
+                                std::to_wstring(designatedCount) + L" 件";
     setLocalizedText(g_statusLabel, status);
 }
 
 void calculateAndDisplay() {
     if (g_inputs.empty()) {
         setLocalizedText(g_resultEdit,
-            L"尚未录入侦察目标。\r\n\r\n请选择目标、填写侦察到的实际价值和数量，然后点击“加入清单”。");
+            L"尚未录入侦察目标。\r\n\r\n请选择目标、填写侦察到的实际价值，然后点击“加入清单”。");
         return;
     }
 
@@ -550,8 +559,7 @@ void calculateAndDisplay() {
                     const auto& input = g_inputs[selection.inputIndex];
                     const auto subtotal = input.unitValue * selection.quantity;
                     output << L"  • " << (input.buyerDesignated ? L"【买家指定】" : L"")
-                           << input.name << L"［" << input.location << L"］ × "
-                           << selection.quantity << L"  —  "
+                           << input.name << L"［" << input.location << L"］  —  "
                            << input.capacityPercent * selection.quantity << L"%，"
                            << formatCurrency(subtotal) << L"\r\n";
                 }
@@ -568,8 +576,7 @@ void calculateAndDisplay() {
                     hasUnselected = true;
                 }
                 output << L"  • " << (g_inputs[i].buyerDesignated ? L"【买家指定】" : L"")
-                       << g_inputs[i].name << L"［" << g_inputs[i].location << L"］ × "
-                       << remaining << L"\r\n";
+                       << g_inputs[i].name << L"［" << g_inputs[i].location << L"］\r\n";
             }
         }
     };
@@ -652,18 +659,20 @@ void addCurrentTarget() {
         return;
     }
     const auto& catalogItem = g_catalog[*catalogIndex];
+    if (targetNameAlreadyAdded(catalogItem.name)) {
+        showLocalizedMessage(
+            L"该物品已在本次侦察清单中。同名物品无论位于普通区域还是 202 展览室，"
+            L"每次任务都只能出现一次。",
+            L"物品已添加", MB_OK | MB_ICONINFORMATION);
+        rebuildTargetOptions();
+        updateReferenceLabel();
+        return;
+    }
     std::int64_t value = 0;
     if (!parsePositiveInteger(getWindowText(g_valueEdit), value)) {
         showLocalizedMessage(L"请输入大于 0 的实际价值。可使用逗号，例如 127,500。",
                              L"价值无效", MB_OK | MB_ICONWARNING);
         SetFocus(g_valueEdit);
-        return;
-    }
-    std::int64_t quantityValue = 0;
-    if (!parsePositiveInteger(getWindowText(g_quantityEdit), quantityValue) || quantityValue > 50) {
-        showLocalizedMessage(L"数量请输入 1 到 50 之间的整数。",
-                             L"数量无效", MB_OK | MB_ICONWARNING);
-        SetFocus(g_quantityEdit);
         return;
     }
     if (value < catalogItem.minValue || value > catalogItem.maxValue) {
@@ -679,11 +688,14 @@ void addCurrentTarget() {
 
     const bool buyerDesignated = Button_GetCheck(g_designatedCheck) == BST_CHECKED;
     g_inputs.push_back({catalogItem.name, catalogItem.location, catalogItem.capacityPercent,
-                        value, static_cast<int>(quantityValue), catalogItem.requiresMultiplayer,
+                        value, 1, catalogItem.requiresMultiplayer,
                         buyerDesignated});
     Button_SetCheck(g_designatedCheck, BST_UNCHECKED);
+    rebuildTargetOptions();
+    updateReferenceLabel();
     refreshListView();
     calculateAndDisplay();
+    PostMessageW(g_mainWindow, kRefreshTargetOptionsMessage, 0, 0);
 }
 
 void removeSelectedTargets() {
@@ -703,14 +715,17 @@ void removeSelectedTargets() {
             g_inputs.erase(g_inputs.begin() + index);
         }
     }
+    rebuildTargetOptions();
+    updateReferenceLabel();
     refreshListView();
     calculateAndDisplay();
+    PostMessageW(g_mainWindow, kRefreshTargetOptionsMessage, 0, 0);
 }
 
 void layoutControls(int width, int height) {
     constexpr int margin = 24;
     const int contentWidth = std::max(760, width - margin * 2);
-    const int comboWidth = std::max(320, contentWidth - 640);
+    const int comboWidth = std::max(320, contentWidth - 555);
     const int listTop = 276;
     const int available = std::max(390, height - listTop - margin);
     const int listGroupHeight = std::max(245, available * 52 / 100);
@@ -729,7 +744,7 @@ void layoutControls(int width, int height) {
         int width;
         int height;
     };
-    const std::array<ControlPlacement, 26> placements{{
+    const std::array<ControlPlacement, 24> placements{{
         {g_titleLabel, margin, 15, contentWidth - 515, 40},
         {g_subtitleLabel, margin, 58, contentWidth - 515, 28},
         {g_languageLabel, width - margin - 500, 29, 90, 30},
@@ -742,10 +757,8 @@ void layoutControls(int width, int height) {
         {g_targetCombo, margin + 18, 153, comboWidth, 330},
         {g_valueLabel, margin + 30 + comboWidth, 127, 150, 25},
         {g_valueEdit, margin + 30 + comboWidth, 153, 150, 34},
-        {g_quantityLabel, margin + 192 + comboWidth, 127, 70, 25},
-        {g_quantityEdit, margin + 192 + comboWidth, 153, 70, 34},
-        {g_designatedCheck, margin + 274 + comboWidth, 153, 150, 34},
-        {g_addButton, margin + 434 + comboWidth, 151, 145, 38},
+        {g_designatedCheck, margin + 192 + comboWidth, 153, 160, 34},
+        {g_addButton, margin + 362 + comboWidth, 151, 145, 38},
         {g_difficultyLabel, margin + 18, 207, 80, 30},
         {g_difficultyCombo, margin + 103, 202, 270, 180},
         {g_referenceLabel, margin + 390, 207, contentWidth - 408, 32},
@@ -789,11 +802,9 @@ void layoutControls(int width, int height) {
         const int listWidth = std::max(
             760, contentWidth - 32 - GetSystemMetrics(SM_CXVSCROLL));
         constexpr int capacityWidth = 105;
-        constexpr int quantityWidth = 70;
         constexpr int designatedWidth = 110;
         constexpr int statusWidth = 100;
-        const int flexibleWidth = listWidth - capacityWidth - quantityWidth -
-                                  designatedWidth - statusWidth;
+        const int flexibleWidth = listWidth - capacityWidth - designatedWidth - statusWidth;
         const int targetWidth = flexibleWidth * 52 / 100;
         const int locationWidth = flexibleWidth * 25 / 100;
         const int valueWidth = flexibleWidth - targetWidth - locationWidth;
@@ -802,9 +813,8 @@ void layoutControls(int width, int height) {
         ListView_SetColumnWidth(g_lootList, 1, locationWidth);
         ListView_SetColumnWidth(g_lootList, 2, valueWidth);
         ListView_SetColumnWidth(g_lootList, 3, capacityWidth);
-        ListView_SetColumnWidth(g_lootList, 4, quantityWidth);
-        ListView_SetColumnWidth(g_lootList, 5, designatedWidth);
-        ListView_SetColumnWidth(g_lootList, 6, statusWidth);
+        ListView_SetColumnWidth(g_lootList, 4, designatedWidth);
+        ListView_SetColumnWidth(g_lootList, 5, statusWidth);
     }
 
     // Group boxes are transparent siblings, so repaint the complete parent and
@@ -832,15 +842,12 @@ void createUi() {
                                BS_GROUPBOX | WS_CLIPSIBLINGS, 0);
     g_targetLabel = makeControl(0, L"STATIC", L"目标与地点", SS_LEFT, 0);
     g_valueLabel = makeControl(0, L"STATIC", L"实际价值（$）", SS_LEFT, 0);
-    g_quantityLabel = makeControl(0, L"STATIC", L"数量", SS_LEFT, 0);
     g_targetCombo = makeControl(WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"",
                                 CBS_DROPDOWN | CBS_HASSTRINGS | CBS_AUTOHSCROLL |
                                     WS_VSCROLL | WS_TABSTOP,
                                 IDC_TARGET_COMBO);
     g_valueEdit = makeControl(WS_EX_CLIENTEDGE, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP,
                               IDC_VALUE_EDIT);
-    g_quantityEdit = makeControl(WS_EX_CLIENTEDGE, L"EDIT", L"1",
-                                 ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, IDC_QUANTITY_EDIT);
     g_designatedCheck = makeControl(0, L"BUTTON", L"买家指定目标",
                                     BS_AUTOCHECKBOX | WS_TABSTOP, IDC_DESIGNATED);
     g_addButton = makeControl(0, L"BUTTON", L"加入清单", BS_PUSHBUTTON | WS_TABSTOP,
@@ -860,16 +867,16 @@ void createUi() {
         LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
     SetWindowTheme(g_lootList, L"Explorer", nullptr);
     const wchar_t* columns[] = {
-        L"目标", L"地点", L"单件价值", L"单件占用", L"数量", L"买家指定", L"状态"};
-    for (int i = 0; i < 7; ++i) {
+        L"目标", L"地点", L"价值", L"背包占用", L"买家指定", L"状态"};
+    for (int i = 0; i < 6; ++i) {
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
         column.pszText = const_cast<wchar_t*>(columns[i]);
         column.cx = 120;
-        column.fmt = (i >= 2 && i <= 4) ? LVCFMT_RIGHT : LVCFMT_LEFT;
+        column.fmt = (i >= 2 && i <= 3) ? LVCFMT_RIGHT : LVCFMT_LEFT;
         ListView_InsertColumn(g_lootList, i, &column);
     }
-    g_statusLabel = makeControl(0, L"STATIC", L"已录入 0 类目标，共 0 件",
+    g_statusLabel = makeControl(0, L"STATIC", L"已录入 0 件物品；买家指定 0 件",
                                 SS_LEFT | SS_CENTERIMAGE, IDC_STATUS_LABEL);
     g_removeButton = makeControl(0, L"BUTTON", L"移除选中", BS_PUSHBUTTON | WS_TABSTOP,
                                  IDC_REMOVE_BUTTON);
@@ -888,7 +895,7 @@ void createUi() {
         g_subtitleLabel, g_languageLabel, g_languageCombo,
         g_playerCountLabel, g_playerCountCombo, g_inputGroup,
         g_targetLabel, g_valueLabel,
-        g_quantityLabel, g_targetCombo, g_valueEdit, g_quantityEdit, g_designatedCheck,
+        g_targetCombo, g_valueEdit, g_designatedCheck,
         g_addButton, g_difficultyLabel, g_difficultyCombo,
         g_referenceLabel, g_listGroup, g_lootList, g_statusLabel, g_removeButton,
         g_clearButton, g_calculateButton, g_resultGroup, g_resultEdit};
@@ -921,7 +928,6 @@ void refreshLanguageUi() {
     setLocalizedText(g_inputGroup, L"1. 添加侦察目标");
     setLocalizedText(g_targetLabel, L"目标与地点（可输入关键字）");
     setLocalizedText(g_valueLabel, L"实际价值（$）");
-    setLocalizedText(g_quantityLabel, L"数量");
     setLocalizedText(g_designatedCheck, L"买家指定目标");
     setLocalizedText(g_addButton, L"加入清单");
     setLocalizedText(g_difficultyLabel, L"任务难度");
@@ -958,6 +964,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
     case WM_SIZE:
         layoutControls(LOWORD(lParam), HIWORD(lParam));
+        return 0;
+    case kRefreshTargetOptionsMessage:
+        g_targetFilterText.clear();
+        populateTargetOptions(L"", std::nullopt, true);
+        updateReferenceLabel();
         return 0;
     case WM_COMMAND: {
         const int id = LOWORD(wParam);
@@ -1005,8 +1016,11 @@ LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         if (id == IDC_CLEAR_BUTTON && notification == BN_CLICKED) {
             g_inputs.clear();
+            rebuildTargetOptions();
+            updateReferenceLabel();
             refreshListView();
             calculateAndDisplay();
+            PostMessageW(window, kRefreshTargetOptionsMessage, 0, 0);
             return 0;
         }
         if (id == IDC_CALCULATE_BUTTON && notification == BN_CLICKED) {
